@@ -1,14 +1,27 @@
 {
   "name": "polyglot-sdk",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "api",
+    "typescript",
+    "sdk",
+    "polyglot",
+    "polyglot-sdk",
+    "ai",
+    "gemini",
+    "mistral",
+    "claude",
+    "chatgpt"
+  ],
+  "author": "n-e-d",
   "license": "MIT",
-  "description": "",
+  "description": "Polyglot is a powerful and flexible TypeScript SDK for interacting with multiple Language Model APIs.",
+  "repository": "https://github.com/n-e-d/polyglot",
+  "homepage": "https://github.com/n-e-d/polyglot",
   "devDependencies": {
     "@types/jest": "^29.5.12",
     "@types/node": "^22.4.1",
