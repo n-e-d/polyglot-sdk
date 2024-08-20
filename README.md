@@ -1,3 +1,5 @@
+![Polyglot-SDK Banner](/repo/banner.png)
+
 # Polyglot <sup>SDK</sup>
 
 Polyglot is a powerful and flexible TypeScript SDK for interacting with multiple Language Model APIs. It provides a unified interface for various LLMs, along with advanced features like streaming responses, caching, middleware support, and error handling.
