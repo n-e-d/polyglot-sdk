@@ -1,4 +1,4 @@
-![Polyglot-SDK Banner](/repo/banner.png)
+![Polyglot-SDK Banner](https://github.com/n-e-d/polyglot-sdk/raw/main/repo/banner.png)
 
 # Polyglot <sup>SDK</sup>
 
