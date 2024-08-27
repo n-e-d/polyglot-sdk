@@ -10,7 +10,7 @@ import {
   GenerateOptions,
 } from "./types";
 import * as Models from "./models";
-import { PolyglotError, RetryableError } from "./utils/error-handler";
+import { PolyglotError, handleError, logger } from "./utils/error-handler";
 import {
   TokenUsageTracker,
   estimateMessagesTokenCount,
@@ -19,11 +19,6 @@ import { Cache } from "./utils/cache";
 import { TokenBucketRateLimiter } from "./utils/rate-limiter";
 import { LoggerPlugin } from "./plugins/logger";
 
-/**
- * Polyglot is the main class for interacting with multiple Language Model APIs.
- * It provides a unified interface for various LLMs, along with advanced features
- * like streaming responses, caching, middleware support, and robust error handling.
- */
 export class Polyglot {
   private models: Map<string, LLMModel>;
   private middlewares: MiddlewareFunction[];
@@ -100,7 +95,10 @@ export class Polyglot {
       } else {
         const model = this.models.get(modelName);
         if (!model) {
-          throw new PolyglotError(`Model "${modelName}" not found`);
+          throw new PolyglotError(
+            `Model "${modelName}" not found`,
+            "MODEL_NOT_FOUND"
+          );
         }
         const rateLimiter = this.rateLimiters.get(modelName);
         if (rateLimiter) {
@@ -127,7 +125,7 @@ export class Polyglot {
     useCache: boolean = true
   ): Promise<LLMResponse> {
     const estimatedTokens = estimateMessagesTokenCount(messages);
-    console.log(`Estimated tokens for request: ${estimatedTokens}`);
+    logger.info(`Generating response`, { modelName, estimatedTokens });
 
     messages = (await this.runPlugins("preProcess", messages)) as ChatMessage[];
 
@@ -137,6 +135,7 @@ export class Polyglot {
     if (useCache) {
       const cachedResponse = this.cache.get(cacheKey);
       if (cachedResponse) {
+        logger.info(`Cache hit for ${cacheKey}`);
         return cachedResponse;
       }
     }
@@ -155,26 +154,34 @@ export class Polyglot {
             response.usage.promptTokens,
             response.usage.completionTokens
           );
-          console.log(
-            `Total token usage: ${this.tokenUsageTracker.getTotalUsage()}`
-          );
+          logger.info(`Token usage updated`, {
+            totalUsage: this.tokenUsageTracker.getTotalUsage(),
+          });
         }
 
         if (useCache) {
           this.cache.set(cacheKey, response);
+          logger.info(`Response cached for ${cacheKey}`);
         }
         return response;
-      } catch (error) {
-        if (error instanceof RetryableError && retries > 1) {
+      } catch (error: unknown) {
+        if (error instanceof PolyglotError && retries > 1) {
           retries--;
+          logger.warn(`Retrying request`, { retriesLeft: retries });
           await new Promise((resolve) => setTimeout(resolve, 1000));
         } else {
-          throw error;
+          if (error instanceof Error) {
+            throw handleError(error);
+          } else {
+            throw handleError(
+              new PolyglotError("An unknown error occurred", "UNKNOWN_ERROR")
+            );
+          }
         }
       }
     }
 
-    throw new PolyglotError("Max retries reached");
+    throw new PolyglotError("Max retries reached", "MAX_RETRIES");
   }
 
   /**
@@ -192,7 +199,8 @@ export class Polyglot {
     const model = this.models.get(modelName);
     if (!model || !model.generateStreamingResponse) {
       throw new PolyglotError(
-        `Streaming not supported for model "${modelName}"`
+        `Streaming not supported for model "${modelName}"`,
+        "STREAMING_NOT_SUPPORTED"
       );
     }
     return model.generateStreamingResponse(messages, options);
@@ -215,13 +223,17 @@ export class Polyglot {
   changeModel(modelName: string, newModel: string): void {
     const model = this.models.get(modelName);
     if (!model) {
-      throw new PolyglotError(`Model "${modelName}" not found`);
+      throw new PolyglotError(
+        `Model "${modelName}" not found`,
+        "MODEL_NOT_FOUND"
+      );
     }
     if ("setModel" in model && typeof model.setModel === "function") {
       model.setModel(newModel);
     } else {
       throw new PolyglotError(
-        `Model "${modelName}" does not support changing models`
+        `Model "${modelName}" does not support changing models`,
+        "MODEL_NOT_CHANGEABLE"
       );
     }
   }

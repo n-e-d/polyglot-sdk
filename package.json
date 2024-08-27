@@ -25,8 +25,8 @@
   "author": "n-e-d",
   "license": "MIT",
   "description": "Polyglot is a powerful and flexible TypeScript SDK for interacting with multiple Language Model APIs.",
-  "repository": "https://github.com/n-e-d/polyglot",
-  "homepage": "https://github.com/n-e-d/polyglot",
+  "repository": "https://github.com/n-e-d/polyglot-sdk",
+  "homepage": "https://github.com/n-e-d/polyglot-sdk",
   "devDependencies": {
     "@types/jest": "^29.5.12",
     "@types/node": "^22.4.1",
@@ -38,6 +38,7 @@
     "typescript": "^5.5.4"
   },
   "dependencies": {
-    "node-cache": "^5.1.2"
+    "node-cache": "^5.1.2",
+    "winston": "^3.14.2"
   }
 }

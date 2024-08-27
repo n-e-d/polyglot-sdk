@@ -7,7 +7,12 @@ import {
   GenerateOptions,
 } from "../types";
 import { HttpClient } from "../utils/http-client";
-import { RetryableError } from "../utils/error-handler";
+import {
+  ModelError,
+  RateLimitError,
+  NetworkError,
+  logger,
+} from "../utils/error-handler";
 import { Readable } from "stream";
 
 const GEMINI_MODELS = ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-1.0-pro"];
@@ -20,15 +25,25 @@ export class GeminiModel implements LLMModel {
     this.config = config;
     this.currentModel = config.model || "gemini-1.5-pro";
     if (!GEMINI_MODELS.includes(this.currentModel)) {
-      throw new Error(`Invalid Gemini model: ${this.currentModel}`);
+      throw new ModelError(
+        `Invalid Gemini model: ${this.currentModel}`,
+        "INVALID_MODEL",
+        this.currentModel
+      );
     }
+    logger.info(`GeminiModel initialized with model: ${this.currentModel}`);
   }
 
   setModel(model: string) {
     if (!GEMINI_MODELS.includes(model)) {
-      throw new Error(`Invalid Gemini model: ${model}`);
+      throw new ModelError(
+        `Invalid Gemini model: ${model}`,
+        "INVALID_MODEL",
+        model
+      );
     }
     this.currentModel = model;
+    logger.info(`GeminiModel switched to model: ${this.currentModel}`);
   }
 
   async generateResponse(
@@ -36,6 +51,9 @@ export class GeminiModel implements LLMModel {
     options?: GenerateOptions
   ): Promise<LLMResponse> {
     try {
+      logger.info(`Generating response with Gemini model`, {
+        model: this.currentModel,
+      });
       const requestBody = {
         model: this.currentModel,
         contents: messages.map((msg) => ({
@@ -48,15 +66,14 @@ export class GeminiModel implements LLMModel {
 
       const response = await HttpClient.post(
         this.config.apiUrl ||
-          "https://generativelanguage.googleapis.com/v1beta/models/" +
-            this.currentModel +
-            ":generateContent",
+          `https://generativelanguage.googleapis.com/v1beta/models/${this.currentModel}:generateContent`,
         requestBody,
         {
           "x-goog-api-key": this.config.apiKey,
         }
       );
 
+      logger.info(`Response received from Gemini API`);
       return {
         content: response.candidates[0].content.parts[0].text,
         usage: {
@@ -65,16 +82,33 @@ export class GeminiModel implements LLMModel {
           totalTokens: response.usageMetadata.totalTokenCount,
         },
       };
-    } catch (error) {
-      if (error instanceof Error) {
-        if (error.message.includes("429")) {
-          throw new RetryableError("Rate limit exceeded");
-        }
-        if (error.message.includes("500")) {
-          throw new RetryableError("Server error");
-        }
+    } catch (error: unknown) {
+      if (error instanceof RateLimitError) {
+        logger.warn(`Rate limit exceeded for Gemini API`, {
+          retryAfter: error.retryAfter,
+        });
+        throw error;
       }
-      throw error;
+      if (error instanceof NetworkError) {
+        logger.error(`Network error occurred with Gemini API`, {
+          statusCode: error.statusCode,
+        });
+        throw error;
+      }
+      logger.error(`Error generating response with Gemini model`, { error });
+      if (error instanceof Error) {
+        throw new ModelError(
+          `Gemini API error: ${error.message}`,
+          "GEMINI_API_ERROR",
+          this.currentModel
+        );
+      } else {
+        throw new ModelError(
+          `Gemini API error: Unknown error occurred`,
+          "GEMINI_API_ERROR",
+          this.currentModel
+        );
+      }
     }
   }
 
@@ -82,6 +116,9 @@ export class GeminiModel implements LLMModel {
     messages: ChatMessage[],
     options?: GenerateOptions
   ): StreamingLLMResponse {
+    logger.info(`Initiating streaming response with Gemini model`, {
+      model: this.currentModel,
+    });
     const stream = new Readable({
       read() {},
     });
@@ -99,9 +136,7 @@ export class GeminiModel implements LLMModel {
 
     HttpClient.postStream(
       this.config.apiUrl ||
-        "https://generativelanguage.googleapis.com/v1beta/models/" +
-          this.currentModel +
-          ":streamGenerateContent",
+        `https://generativelanguage.googleapis.com/v1beta/models/${this.currentModel}:streamGenerateContent`,
       requestBody,
       {
         "x-goog-api-key": this.config.apiKey,
@@ -122,15 +157,17 @@ export class GeminiModel implements LLMModel {
                 stream.push(data.candidates[0].content.parts[0].text);
               }
             } catch (error) {
-              console.error("Error parsing streaming data:", error);
+              logger.error("Error parsing streaming data:", { error });
             }
           }
         }
       })
       .on("end", () => {
+        logger.info(`Streaming response completed for Gemini model`);
         stream.push(null);
       })
       .on("error", (error) => {
+        logger.error(`Error in streaming response for Gemini model`, { error });
         stream.emit("error", error);
       });
 

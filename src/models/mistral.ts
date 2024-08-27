@@ -7,7 +7,12 @@ import {
   GenerateOptions,
 } from "../types";
 import { HttpClient } from "../utils/http-client";
-import { RetryableError } from "../utils/error-handler";
+import {
+  ModelError,
+  RateLimitError,
+  NetworkError,
+  logger,
+} from "../utils/error-handler";
 import { Readable } from "stream";
 
 const MISTRAL_MODELS = [
@@ -26,15 +31,25 @@ export class MistralModel implements LLMModel {
     this.config = config;
     this.currentModel = config.model || "open-mistral-nemo";
     if (!MISTRAL_MODELS.includes(this.currentModel)) {
-      throw new Error(`Invalid Mistral model: ${this.currentModel}`);
+      throw new ModelError(
+        `Invalid Mistral model: ${this.currentModel}`,
+        "INVALID_MODEL",
+        this.currentModel
+      );
     }
+    logger.info(`MistralModel initialized with model: ${this.currentModel}`);
   }
 
   setModel(model: string) {
     if (!MISTRAL_MODELS.includes(model)) {
-      throw new Error(`Invalid Mistral model: ${model}`);
+      throw new ModelError(
+        `Invalid Mistral model: ${model}`,
+        "INVALID_MODEL",
+        model
+      );
     }
     this.currentModel = model;
+    logger.info(`MistralModel switched to model: ${this.currentModel}`);
   }
 
   async generateResponse(
@@ -42,6 +57,9 @@ export class MistralModel implements LLMModel {
     options?: GenerateOptions
   ): Promise<LLMResponse> {
     try {
+      logger.info(`Generating response with Mistral model`, {
+        model: this.currentModel,
+      });
       const requestBody = {
         model: this.currentModel,
         messages: messages,
@@ -57,6 +75,7 @@ export class MistralModel implements LLMModel {
         }
       );
 
+      logger.info(`Response received from Mistral API`);
       return {
         content: response.choices[0].message.content,
         usage: {
@@ -65,16 +84,33 @@ export class MistralModel implements LLMModel {
           totalTokens: response.usage.total_tokens,
         },
       };
-    } catch (error) {
-      if (error instanceof Error) {
-        if (error.message.includes("429")) {
-          throw new RetryableError("Rate limit exceeded");
-        }
-        if (error.message.includes("500")) {
-          throw new RetryableError("Server error");
-        }
+    } catch (error: unknown) {
+      if (error instanceof RateLimitError) {
+        logger.warn(`Rate limit exceeded for Mistral API`, {
+          retryAfter: error.retryAfter,
+        });
+        throw error;
       }
-      throw error;
+      if (error instanceof NetworkError) {
+        logger.error(`Network error occurred with Mistral API`, {
+          statusCode: error.statusCode,
+        });
+        throw error;
+      }
+      logger.error(`Error generating response with Mistral model`, { error });
+      if (error instanceof Error) {
+        throw new ModelError(
+          `Mistral API error: ${error.message}`,
+          "MISTRAL_API_ERROR",
+          this.currentModel
+        );
+      } else {
+        throw new ModelError(
+          `Mistral API error: Unknown error occurred`,
+          "MISTRAL_API_ERROR",
+          this.currentModel
+        );
+      }
     }
   }
 
@@ -82,6 +118,9 @@ export class MistralModel implements LLMModel {
     messages: ChatMessage[],
     options?: GenerateOptions
   ): StreamingLLMResponse {
+    logger.info(`Initiating streaming response with Mistral model`, {
+      model: this.currentModel,
+    });
     const stream = new Readable({
       read() {},
     });
@@ -120,15 +159,19 @@ export class MistralModel implements LLMModel {
                 stream.push(data.choices[0].delta.content);
               }
             } catch (error) {
-              console.error("Error parsing streaming data:", error);
+              logger.error("Error parsing streaming data:", error);
             }
           }
         }
       })
       .on("end", () => {
+        logger.info(`Streaming response completed for Mistral model`);
         stream.push(null);
       })
       .on("error", (error) => {
+        logger.error(`Error in streaming response for Mistral model`, {
+          error,
+        });
         stream.emit("error", error);
       });
 
