@@ -7,7 +7,12 @@ import {
   GenerateOptions,
 } from "../types";
 import { HttpClient } from "../utils/http-client";
-import { RetryableError } from "../utils/error-handler";
+import {
+  ModelError,
+  RateLimitError,
+  NetworkError,
+  logger,
+} from "../utils/error-handler";
 import { Readable } from "stream";
 
 const GPT_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"];
@@ -20,15 +25,25 @@ export class ChatGPTModel implements LLMModel {
     this.config = config;
     this.currentModel = config.model || "gpt-4o";
     if (!GPT_MODELS.includes(this.currentModel)) {
-      throw new Error(`Invalid GPT model: ${this.currentModel}`);
+      throw new ModelError(
+        `Invalid GPT model: ${this.currentModel}`,
+        "INVALID_MODEL",
+        this.currentModel
+      );
     }
+    logger.info(`ChatGPTModel initialized with model: ${this.currentModel}`);
   }
 
   setModel(model: string) {
     if (!GPT_MODELS.includes(model)) {
-      throw new Error(`Invalid GPT model: ${model}`);
+      throw new ModelError(
+        `Invalid GPT model: ${model}`,
+        "INVALID_MODEL",
+        model
+      );
     }
     this.currentModel = model;
+    logger.info(`ChatGPTModel switched to model: ${this.currentModel}`);
   }
 
   async generateResponse(
@@ -36,6 +51,9 @@ export class ChatGPTModel implements LLMModel {
     options?: GenerateOptions
   ): Promise<LLMResponse> {
     try {
+      logger.info(`Generating response with ChatGPT model`, {
+        model: this.currentModel,
+      });
       const requestBody = {
         model: this.currentModel,
         messages: messages,
@@ -51,6 +69,7 @@ export class ChatGPTModel implements LLMModel {
         }
       );
 
+      logger.info(`Response received from ChatGPT API`);
       return {
         content: response.choices[0].message.content,
         usage: {
@@ -59,16 +78,33 @@ export class ChatGPTModel implements LLMModel {
           totalTokens: response.usage.total_tokens,
         },
       };
-    } catch (error) {
-      if (error instanceof Error) {
-        if (error.message.includes("429")) {
-          throw new RetryableError("Rate limit exceeded");
-        }
-        if (error.message.includes("500")) {
-          throw new RetryableError("Server error");
-        }
+    } catch (error: unknown) {
+      if (error instanceof RateLimitError) {
+        logger.warn(`Rate limit exceeded for ChatGPT API`, {
+          retryAfter: error.retryAfter,
+        });
+        throw error;
       }
-      throw error;
+      if (error instanceof NetworkError) {
+        logger.error(`Network error occurred with ChatGPT API`, {
+          statusCode: error.statusCode,
+        });
+        throw error;
+      }
+      logger.error(`Error generating response with ChatGPT model`, { error });
+      if (error instanceof Error) {
+        throw new ModelError(
+          `ChatGPT API error: ${error.message}`,
+          "CHATGPT_API_ERROR",
+          this.currentModel
+        );
+      } else {
+        throw new ModelError(
+          `ChatGPT API error: Unknown error occurred`,
+          "CHATGPT_API_ERROR",
+          this.currentModel
+        );
+      }
     }
   }
 
@@ -76,6 +112,9 @@ export class ChatGPTModel implements LLMModel {
     messages: ChatMessage[],
     options?: GenerateOptions
   ): StreamingLLMResponse {
+    logger.info(`Initiating streaming response with ChatGPT model`, {
+      model: this.currentModel,
+    });
     const stream = new Readable({
       read() {},
     });
@@ -114,15 +153,19 @@ export class ChatGPTModel implements LLMModel {
                 stream.push(data.choices[0].delta.content);
               }
             } catch (error) {
-              console.error("Error parsing streaming data:", error);
+              logger.error("Error parsing streaming data:", error);
             }
           }
         }
       })
       .on("end", () => {
+        logger.info(`Streaming response completed for ChatGPT model`);
         stream.push(null);
       })
       .on("error", (error) => {
+        logger.error(`Error in streaming response for ChatGPT model`, {
+          error,
+        });
         stream.emit("error", error);
       });
 

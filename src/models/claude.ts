@@ -7,7 +7,12 @@ import {
   GenerateOptions,
 } from "../types";
 import { HttpClient } from "../utils/http-client";
-import { RetryableError } from "../utils/error-handler";
+import {
+  ModelError,
+  RateLimitError,
+  NetworkError,
+  logger,
+} from "../utils/error-handler";
 
 const CLAUDE_MODELS = [
   "claude-3-5-sonnet-20240620",
@@ -24,15 +29,25 @@ export class ClaudeModel implements LLMModel {
     this.config = config;
     this.currentModel = config.model || "claude-3-5-sonnet-20240620";
     if (!CLAUDE_MODELS.includes(this.currentModel)) {
-      throw new Error(`Invalid Claude model: ${this.currentModel}`);
+      throw new ModelError(
+        `Invalid Claude model: ${this.currentModel}`,
+        "INVALID_MODEL",
+        this.currentModel
+      );
     }
+    logger.info(`ClaudeModel initialized with model: ${this.currentModel}`);
   }
 
   setModel(model: string) {
     if (!CLAUDE_MODELS.includes(model)) {
-      throw new Error(`Invalid Claude model: ${model}`);
+      throw new ModelError(
+        `Invalid Claude model: ${model}`,
+        "INVALID_MODEL",
+        model
+      );
     }
     this.currentModel = model;
+    logger.info(`ClaudeModel switched to model: ${this.currentModel}`);
   }
 
   async generateResponse(
@@ -40,6 +55,9 @@ export class ClaudeModel implements LLMModel {
     options?: GenerateOptions
   ): Promise<LLMResponse> {
     try {
+      logger.info(`Generating response with Claude model`, {
+        model: this.currentModel,
+      });
       const requestBody = {
         model: this.currentModel,
         messages: messages,
@@ -55,6 +73,7 @@ export class ClaudeModel implements LLMModel {
         }
       );
 
+      logger.info(`Response received from Claude API`);
       return {
         content: response.choices[0].message.content,
         usage: {
@@ -63,11 +82,33 @@ export class ClaudeModel implements LLMModel {
           totalTokens: response.usage.total_tokens,
         },
       };
-    } catch (error) {
-      if (error instanceof Error && error.message.includes("429")) {
-        throw new RetryableError("Rate limit exceeded");
+    } catch (error: unknown) {
+      if (error instanceof RateLimitError) {
+        logger.warn(`Rate limit exceeded for Claude API`, {
+          retryAfter: error.retryAfter,
+        });
+        throw error;
       }
-      throw error;
+      if (error instanceof NetworkError) {
+        logger.error(`Network error occurred with Claude API`, {
+          statusCode: error.statusCode,
+        });
+        throw error;
+      }
+      logger.error(`Error generating response with Claude model`, { error });
+      if (error instanceof Error) {
+        throw new ModelError(
+          `Claude API error: ${error.message}`,
+          "CLAUDE_API_ERROR",
+          this.currentModel
+        );
+      } else {
+        throw new ModelError(
+          `Claude API error: Unknown error occurred`,
+          "CLAUDE_API_ERROR",
+          this.currentModel
+        );
+      }
     }
   }
 
@@ -75,6 +116,9 @@ export class ClaudeModel implements LLMModel {
     messages: ChatMessage[],
     options?: GenerateOptions
   ): StreamingLLMResponse {
+    logger.info(`Initiating streaming response with Claude model`, {
+      model: this.currentModel,
+    });
     const requestBody = {
       model: this.currentModel,
       messages: messages,

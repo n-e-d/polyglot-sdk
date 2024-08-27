@@ -1,10 +1,16 @@
 import https from "https";
 import { Readable } from "stream";
-import { PolyglotError, RetryableError } from "./error-handler";
+import {
+  PolyglotError,
+  NetworkError,
+  RateLimitError,
+  logger,
+} from "./error-handler";
+import { IncomingMessage } from "http";
 
-interface HttpResponse {
+interface Response {
   statusCode: number;
-  headers: Record<string, string>;
+  headers: IncomingMessage["headers"];
   body: string;
 }
 
@@ -15,10 +21,14 @@ export class HttpClient {
     headers: Record<string, string>
   ): Promise<any> {
     try {
+      logger.info(`Sending POST request to ${url}`);
       const response = await this.makeRequest("POST", url, data, headers);
+      logger.info(`Received response from ${url}`, {
+        statusCode: response.statusCode,
+      });
       return JSON.parse(response.body);
     } catch (error) {
-      this.handleError(error);
+      return this.handleRequestError(error);
     }
   }
 
@@ -31,6 +41,8 @@ export class HttpClient {
       read() {},
     });
 
+    logger.info(`Initiating streaming POST request to ${url}`);
+
     const req = https.request(
       url,
       {
@@ -42,12 +54,16 @@ export class HttpClient {
       },
       (res) => {
         res.on("data", (chunk) => stream.push(chunk));
-        res.on("end", () => stream.push(null));
+        res.on("end", () => {
+          logger.info(`Streaming request to ${url} completed`);
+          stream.push(null);
+        });
       }
     );
 
     req.on("error", (error) => {
-      stream.emit("error", this.handleError(error));
+      logger.error(`Error in streaming request to ${url}`, { error });
+      stream.emit("error", this.handleRequestError(error));
     });
 
     req.write(JSON.stringify(data));
@@ -61,7 +77,7 @@ export class HttpClient {
     url: string,
     data: Record<string, any>,
     headers: Record<string, string>
-  ): Promise<HttpResponse> {
+  ): Promise<Response> {
     return new Promise((resolve, reject) => {
       const req = https.request(
         url,
@@ -78,7 +94,7 @@ export class HttpClient {
           res.on("end", () => {
             resolve({
               statusCode: res.statusCode || 500,
-              headers: res.headers as Record<string, string>,
+              headers: res.headers,
               body,
             });
           });
@@ -91,15 +107,22 @@ export class HttpClient {
     });
   }
 
-  private static handleError(error: any): never {
-    if (error instanceof Error) {
-      if (error.message.includes("429")) {
-        throw new RetryableError("Rate limit exceeded");
+  private static handleRequestError(error: any): never {
+    logger.error("HTTP request error", { error });
+    if (error.response) {
+      if (error.response.status === 429) {
+        throw new RateLimitError(
+          "Rate limit exceeded",
+          error.response.headers["retry-after"]
+        );
       }
-      if (error.message.includes("500")) {
-        throw new RetryableError("Server error");
+      if (error.response.status >= 500) {
+        throw new NetworkError("Server error", error.response.status);
       }
     }
-    throw new PolyglotError(`HTTP request failed: ${error.message}`);
+    throw new PolyglotError(
+      `HTTP request failed: ${error.message}`,
+      "HTTP_ERROR"
+    );
   }
 }
